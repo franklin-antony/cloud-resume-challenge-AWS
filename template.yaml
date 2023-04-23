@@ -1,0 +1,367 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  cloud-resume-app-website
+  Sample SAM Template for cloud-resume-app-website
+
+Globals:
+  Function:
+    Timeout: 20
+
+
+Parameters:
+  DomainName:
+    Description: "Domain for which you are requesting a cert"
+    Type: String
+    Default: website.franklinantony.bio #Put your own domain name here
+  HostedZoneId:
+    Description: "hosted zone id in which CNAME record for the validation needs to be added"
+    Type: String
+    Default: Z077400534AP61JJMINGK #Put the hosted zone id in which CNAME record for the validation needs to be added
+
+
+Resources:
+  # Create the S3 bucket. Not setting it up as a website
+  s3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      WebsiteConfiguration: 
+        IndexDocument: index.html       
+      BucketName: website.franklinantony.bio
+  
+
+  #Additing a bucket policy to allow public access
+  s3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref s3Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: Allow
+            Principal:
+              Service: "cloudfront.amazonaws.com"          
+            Action: 
+              - "s3:*"
+            Resource: 
+              - "arn:aws:s3:::website.franklinantony.bio/*"
+
+
+
+
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Description: "origin access control(OAC) for allowing cloudfront to access S3 bucket"
+        Name: static-hosting-OAC
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4    
+
+  # Creating a CloudFront distribution
+  myDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        DefaultCacheBehavior:
+          ViewerProtocolPolicy: allow-all
+          TargetOriginId: website.franklinantony.bio.s3.eu-west-2.amazonaws.com
+          DefaultTTL: 0
+          MinTTL: 0
+          MaxTTL: 0
+          ForwardedValues:
+            QueryString: false
+        Origins:
+        - DomainName: website.franklinantony.bio.s3.eu-west-2.amazonaws.com
+          Id: website.franklinantony.bio.s3.eu-west-2.amazonaws.com
+          S3OriginConfig:
+            OriginAccessIdentity: ""
+          OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id
+        Enabled: "true"
+        DefaultRootObject: index.html
+        Aliases:
+          - website.franklinantony.bio
+        ViewerCertificate:
+          AcmCertificateArn: "arn:aws:acm:us-east-1:820449962544:certificate/19061812-b945-4c6b-b7d9-f85b21d1f993"
+          SslSupportMethod: sni-only
+
+
+  # #For creating certificate
+  # Certificate:
+  #   Type: AWS::CertificateManager::Certificate
+  #   Properties:
+  #     DomainName: !Ref DomainName
+  #     DomainValidationOptions:
+  #       - DomainName: !Ref DomainName
+  #         HostedZoneId: !Ref HostedZoneId
+  #     ValidationMethod: 'DNS'        
+   
+
+  # Our API: we'll use a separate Lambda function per route.
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      EndpointConfiguration:
+        Types:
+        - EDGE
+      Name: simple-rest-endpoint
+  RestApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+    - HelloWorldApiGatewayMethod
+    Properties:
+      RestApiId: !Ref RestApi
+      StageName: dev
+
+  # Route 1: GET /get_visitors
+  HelloWorldApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: get_visitors
+      RestApiId: !Ref RestApi
+  HelloWorldApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+    - HelloWorldFunctionApiGatewayPermission
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: NONE
+      HttpMethod: GET
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri:
+          !Join
+          - ''
+          - - 'arn:'
+            - !Ref AWS::Partition
+            - ':apigateway:'
+            - !Ref AWS::Region
+            - :lambda:path/2015-03-31/functions/
+            - !GetAtt GetVisitorCountFunction.Arn
+            - /invocations
+      ResourceId: !Ref HelloWorldApiGatewayResource
+      RestApiId: !Ref RestApi
+
+# Route 2: GET /update_visitors
+  UpdateHelloWorldApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: update_visitors
+      RestApiId: !Ref RestApi
+  UpdateHelloWorldApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+    - UpdateHelloWorldFunctionApiGatewayPermission
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: NONE
+      HttpMethod: GET
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri:
+          !Join
+          - ''
+          - - 'arn:'
+            - !Ref AWS::Partition
+            - ':apigateway:'
+            - !Ref AWS::Region
+            - :lambda:path/2015-03-31/functions/
+            - !GetAtt UpdateVisitorCountFunction.Arn
+            - /invocations
+      ResourceId: !Ref UpdateHelloWorldApiGatewayResource
+      RestApiId: !Ref RestApi      
+
+
+  # Permission to invoke the Lambda Function    
+  HelloWorldFunctionApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt GetVisitorCountFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        !Join
+        - ''
+        - - 'arn:'
+          - !Ref AWS::Partition
+          - ':execute-api:'
+          - !Ref AWS::Region
+          - ':'
+          - !Ref AWS::AccountId
+          - ':'
+          - !Ref RestApi
+          - /*/*
+
+  # Permission to invoke the Lambda Function    
+  UpdateHelloWorldFunctionApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt UpdateVisitorCountFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        !Join
+        - ''
+        - - 'arn:'
+          - !Ref AWS::Partition
+          - ':execute-api:'
+          - !Ref AWS::Region
+          - ':'
+          - !Ref AWS::AccountId
+          - ':'
+          - !Ref RestApi
+          - /*/*
+
+  HelloWorldFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+      - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess      
+
+  GetVisitorCountFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk'); // Load the AWS SDK for Node.js
+
+          exports.handler = async (event, context) => {
+              const documentClient = new AWS.DynamoDB.DocumentClient();
+
+              let responseBody = "";
+              let statusCode = 0;
+
+
+              const params = {
+                  TableName: "visitors",
+                  Key: { "visitors_id": "visitors" }
+              };
+
+              try {
+                  const data = await documentClient.get(params).promise();
+                  responseBody = JSON.stringify(data);
+                  statusCode = 201;
+              } catch (err) {
+                  responseBody = `Unable to get Visitors Count: ${err}`;
+                  statusCode = 403;
+              }
+
+              const response = {
+                  statusCode: statusCode,
+                  headers: {
+                      "Content-Type": "application/json",
+                      "Access-Control-Allow-Origin":"*",
+                      "Access-Control-Allow-Methods":"POST, GET, PUT, DELETE, OPTIONS"                      
+                  },
+                  body: responseBody
+              };
+
+              return response;
+          };
+
+      Handler: index.handler
+      Role: !GetAtt HelloWorldFunctionRole.Arn
+      Runtime: nodejs14.x
+
+  UpdateVisitorCountFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk'); // Load the AWS SDK for Node.js
+
+          exports.handler = async (event, context) => {
+              const documentClient = new AWS.DynamoDB.DocumentClient();
+
+              let responseBody = "";
+              let statusCode = 0;
+
+
+              const params = {
+                  TableName: "visitors",
+                  Key: { "visitors_id": "visitors" },
+                  UpdateExpression: "ADD visitors_count :inc_count",
+                  ExpressionAttributeValues: {':inc_count': 1},
+                  ReturnValues: "ALL_NEW"
+              };
+
+              try {
+                  const data = await documentClient.update(params).promise();
+                  responseBody = JSON.stringify(data);
+                  statusCode = 201;
+              } catch (err) {
+                  responseBody = `Unable to update visitors: ${err}`;
+                  statusCode = 403;
+              }
+
+              const response = {
+                  statusCode: statusCode,
+                  headers: {
+                      "Content-Type": "application/json",
+                      "Access-Control-Allow-Origin":"*",
+                      "Access-Control-Allow-Methods":"POST, GET, PUT, DELETE, OPTIONS"
+                  },
+                  body: responseBody
+              };
+
+              return response;
+          };
+      Handler: index.handler
+      Role: !GetAtt HelloWorldFunctionRole.Arn
+      Runtime: nodejs14.x     
+
+
+
+  # Creating DynamoDB tables with CloudFormation
+  FederationTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: visitors
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: "visitors_id"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "visitors_id"
+          KeyType: "HASH"
+
+
+Outputs:
+  # Outputs the URL to our Lambda REST API.
+  ApiUrl:
+    Description: URL of the REST API.
+    Value:
+      Fn::Join:
+      - ''
+      - - https://
+        - Ref: RestApi
+        - .execute-api.
+        - Ref: AWS::Region
+        - .
+        - Ref: AWS::URLSuffix
+        - /dev
+  #Outputs the URL to CloudFront FQDN.
+  CloutFrontUrl:
+    Description: URL of the CloudFront FQDN
+    Value: !GetAtt myDistribution.DomainName
+#   # Outputs the name of Lambda function.
+#   LambdaFunctionName:
+#     Description: Autogenreate name of the Lambda Funtion
+#     Value: !GetAtt HelloWorldFunction.Arn
